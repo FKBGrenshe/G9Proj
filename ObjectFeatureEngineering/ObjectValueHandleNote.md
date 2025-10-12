@@ -1,23 +1,58 @@
+# 缺失值处理
+将缺失值>95%的列进行删除
+```python
+# 假设 df 是你的 DataFrame
+# 删除缺失比例超过 95% 的列
+print("筛选前剩余的列数:", train.shape[1])
+# 查看都有哪些列
+print("删除前都有哪些列:", train.columns)
+threshold = 0.95
+train = train.loc[:, train.isnull().mean() <= threshold]
+print("筛选后剩余的列数:", train.shape[1])
+print("删除后都有哪些列:", train.columns)
+----------------------------------------------
+筛选前剩余的列数: 53
+删除前都有哪些列: Index(['index', 'target', 'timestamp', 'processId', 'threadId',
+       'parentProcessId', 'userId', 'mountNamespace', 'processName',
+       'hostName', 'eventId', 'eventName', 'stackAddresses', 'argsNum',
+       'returnValue', 'domain', 'type', 'protocol', 'pathname', 'flags', 'dev',
+       'inode', 'fd', 'statbuf', 'dirfd', 'mode', 'ruid', 'euid', 'rgid',
+       'egid', 'cap', 'sockfd', 'addr', 'addrlen', 'dirp', 'count', 'stack',
+       'parent_tid', 'child_tid', 'tls', 'option', 'arg2', 'arg3', 'arg4',
+       'arg5', 'pid', 'sig', 'target.1', 'oldfd', 'newfd', 'uid', 'argv',
+       'gid'],
+      dtype='object')
+筛选后剩余的列数: 23
+删除后都有哪些列: Index(['index', 'target', 'timestamp', 'processId', 'threadId',
+       'parentProcessId', 'userId', 'mountNamespace', 'processName',
+       'hostName', 'eventId', 'eventName', 'stackAddresses', 'argsNum',
+       'returnValue', 'pathname', 'flags', 'dev', 'inode', 'fd', 'statbuf',
+       'dirfd', 'mode'],
+      dtype='object')
+```
+
+# 文本数值预处理
+针对不同文本特征的特性，使用相应的处理方法转为数值特征
 
 - processName 
 - eventName 
 - stackAddress
-- domain
-- type
+- domain （被删除）
+- type（被删除）
 - pathname
 - flags
-- statbuf
+- statbuf -- 被丢弃
 - mode
-- cap
-- addr
-- addrlen
-- dirp
-- stack
-- parent_tid
-- child_tid
-- option
-- target.1
-- argv
+- cap（被删除）
+- addr（被删除）
+- addrlen（被删除）
+- dirp（被删除）
+- stack（被删除）
+- parent_tid（被删除）
+- child_tid（被删除）
+- option（被删除）
+- target.1（被删除）
+- argv（被删除）
 
 
 ## 类别型categories
