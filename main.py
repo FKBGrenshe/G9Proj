@@ -16,6 +16,7 @@ def main():
         ################ 最终路径 #####################
         ##############################################
         trainDatasetCSVRootDir = get_full_path(trainDatasetCSV)
+        model_name = input("请输入要保存的模型名称 (例如 'trained_model'): ").strip()
         moduleSaveRootDir = os.path.join(get_full_path(moduleSavePath), f"{model_name}.joblib")
         print("moduleSaveRootDir =", moduleSaveRootDir)
 
@@ -28,19 +29,21 @@ def main():
             print("数据预处理失败，训练中止。")
             return
         # 训练并保存模型
-        model_name = input("请输入要保存的模型名称 (例如 'trained_model'): ").strip()
         train_and_save_model(processed_training_data, moduleSaveRootDir)
 
     elif mode == 'valid':
         # 从已经保存模型中进行验证
         # 输入模型名称，如果savedModule中没有该模型则报错
         model_name = input("请输入已训练模型的名称 (例如 'trained_model'): ").strip()
-        model_file = f"{moduleSavePath}{model_name}.joblib"
+        model_file = os.path.join(get_full_path(moduleSavePath), f"{model_name}.joblib")
         if not os.path.exists(model_file):
             print(f"模型文件 {model_file} 不存在，请检查模型名称。")
             return
         
-        validate_model(model_file, validDatasetCSV)
+
+        # 预处理验证数据
+        validDatasetCSVRootDir = get_full_path(validDatasetCSV)
+        validate_model(model_file, validDatasetCSVRootDir)
 
     else:
         print("无效的模式输入，请输入 'train' 或 'valid'。")
