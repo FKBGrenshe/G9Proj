@@ -28,7 +28,15 @@ def main():
         # 2. 训练并保存模型
         # 请输入模型名称
         model_name = input("请输入要保存的模型名称 (例如 'trained_model'): ").strip()
+
+        
+        # 2. 定义保存模型的文件夹
+        moduleSaveDir = os.path.join(os.getcwd(), "savedModule")
+        os.makedirs(moduleSaveDir, exist_ok=True)  # 如果文件夹不存在则自动创建
+        # 3. 拼接完整路径
+        moduleSavePath = os.path.join(moduleSaveDir, f"{model_name}.joblib")
         moduleSavePath = f"{moduleSavePath}{model_name}.joblib"
+        print(moduleSavePath)
         train_and_save_model(processed_training_data, moduleSavePath)
 
     elif mode == 'valid':
