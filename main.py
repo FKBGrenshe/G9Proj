@@ -9,24 +9,27 @@ from utils import *;
 # 这是主程序入口
 def main():
     print("请使用 'data_process.py' 进行数据预处理，或使用 'valid.py' 进行模型验证。")
-    ## 输入trian 即重新训练一个模型并进行保存，输入valid 即使用已有模型进行验证，保存至saveModule目录中
+    ## 输入 train 即重新训练一个模型并进行保存，输入valid 即使用已有模型进行验证，保存至saveModule目录中
     mode = input("请输入模式 (train/valid): ").strip().lower()
     if mode == 'train':
-        # 重新训练模型
+        ##############################################
+        ################ 最终路径 #####################
+        ##############################################
         trainDatasetCSVRootDir = get_full_path(trainDatasetCSV)
-        # 1. 数据预处理
+        moduleSaveRootDir = os.path.join(get_full_path(moduleSavePath), f"{model_name}.joblib")
+        print("moduleSaveRootDir =", moduleSaveRootDir)
+
+        ##############################################
+        ################ 预处理&模型训练 ##############
+        ##############################################
+        # 预处理训练数据
         processed_training_data = preprocess_for_training(trainDatasetCSVRootDir)
         if processed_training_data is None:
             print("数据预处理失败，训练中止。")
             return
-        
-        # 2. 训练并保存模型
+        # 训练并保存模型
         model_name = input("请输入要保存的模型名称 (例如 'trained_model'): ").strip()
-        
-        moduleSaveRootDir = get_full_path(moduleSavePath)
-        print(os.path.join(moduleSaveRootDir, f"{model_name}.joblib"))
-
-        train_and_save_model(processed_training_data, moduleSavePath)
+        train_and_save_model(processed_training_data, moduleSaveRootDir)
 
     elif mode == 'valid':
         # 从已经保存模型中进行验证
