@@ -1,8 +1,9 @@
-from config import *;
+from config import trainDatasetCSV, validDatasetCSV, moduleSavePath;
 from train import *;
 from valid import *;
 from data_process import *;
 import os
+from utils import *;
 
 
 # 这是主程序入口
@@ -12,31 +13,19 @@ def main():
     mode = input("请输入模式 (train/valid): ").strip().lower()
     if mode == 'train':
         # 重新训练模型
-
-        # 获取当前脚本所在目录
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        # 拼接相对路径
-        trainDatasetCSV = os.path.join(base_dir, "data", "sample_processes_train.csv")
-        print(trainDatasetCSV)
-
+        trainDatasetCSVRootDir = get_full_path(trainDatasetCSV)
         # 1. 数据预处理
-        processed_training_data = preprocess_for_training(trainDatasetCSV)
+        processed_training_data = preprocess_for_training(trainDatasetCSVRootDir)
         if processed_training_data is None:
             print("数据预处理失败，训练中止。")
             return
         
         # 2. 训练并保存模型
-        # 请输入模型名称
         model_name = input("请输入要保存的模型名称 (例如 'trained_model'): ").strip()
-
         
-        # 2. 定义保存模型的文件夹
-        moduleSaveDir = os.path.join(os.getcwd(), "savedModule")
-        os.makedirs(moduleSaveDir, exist_ok=True)  # 如果文件夹不存在则自动创建
-        # 3. 拼接完整路径
-        moduleSavePath = os.path.join(moduleSaveDir, f"{model_name}.joblib")
-        moduleSavePath = f"{moduleSavePath}{model_name}.joblib"
-        print(moduleSavePath)
+        moduleSaveRootDir = get_full_path(moduleSavePath)
+        print(os.path.join(moduleSaveRootDir, f"{model_name}.joblib"))
+
         train_and_save_model(processed_training_data, moduleSavePath)
 
     elif mode == 'valid':
