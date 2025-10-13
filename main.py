@@ -1,10 +1,11 @@
 from config import trainDatasetCSV, validDatasetCSV, moduleSavePath;
+from config import *;
 from train import *;
 from valid import *;
 from data_process import *;
 import os
 from utils import *;
-
+from ObjectFeatureEngineering.FeatureEngineering import preprocess_text_features
 
 # 这是主程序入口
 def main():
@@ -49,6 +50,26 @@ def main():
         print("无效的模式输入，请输入 'train' 或 'valid'。")
 
 
+def datasetPreprocess():
+
+    print("数据预处理 - 预处理训练集和验证集的文本特征...")
+    trainDatasetCSVRootDir = get_full_path(trainDatasetCSV)
+    validDatasetCSVRootDir = get_full_path(validDatasetCSV)
+    # processedTrainDatasetCSVRootDir = get_full_path(processedTrainDatasetCSV)
+    processedValidDatasetCSVRootDir = get_full_path(processedValidDatasetCSV)
+
+    # 预处理训练集
+    """ preprocess_text_features(
+        input_filepath=trainDatasetCSV,
+        output_filepath=processedTrainDatasetCSV
+    ) """
+    # 预处理验证集
+    preprocess_text_features(
+        input_filepath=validDatasetCSVRootDir,
+        output_filepath=processedValidDatasetCSVRootDir
+    )
+
 # 运行主程序
 if __name__ == '__main__':
-    main()
+    # main()
+    datasetPreprocess()

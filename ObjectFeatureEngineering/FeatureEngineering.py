@@ -5,7 +5,7 @@ import numpy as np
 import ast
 import pandas as pd
 from sklearn.preprocessing import MultiLabelBinarizer
-from ..config import validDatasetCSV,processedValidDatasetCSV;
+
 
 def decode_or_split_flags(value):
         """
@@ -92,6 +92,8 @@ def preprocess_text_features(input_filepath: str, output_filepath: str):
         input_filepath (str): 包含原始数据的CSV文件路径。
         output_filepath (str): 保存处理后数据的CSV文件路径。
     """
+
+
     
 
     train = pd.read_csv(input_filepath)
@@ -99,6 +101,8 @@ def preprocess_text_features(input_filepath: str, output_filepath: str):
     # 解析args列
     train['args_parsed'] = train['args'].apply(ast.literal_eval)
     train['args_dict'] = train['args_parsed'].apply(list_to_dict)
+    # 展开成 DataFrame
+    args_df = pd.json_normalize(train['args_dict'])
     train = pd.concat([train.drop(columns=['args', 'args_parsed', 'args_dict']), args_df], axis=1)
     # 导出解析arg的CSV
     saved_parsed_csv = False;
@@ -182,6 +186,11 @@ def preprocess_text_features(input_filepath: str, output_filepath: str):
     ####################################################
     ### 删除pathname和mode列
     train = train.drop(columns=["pathname", "mode"])   
+    # 查看还有哪些列是文本型
+    cat_cols = train.select_dtypes(include=['object']).columns
+    print("当前文本特征包括：", cat_cols)
+    # 删除这些列
+    train = train.drop(columns=cat_cols)
     # 对数据进行保存
     train.to_csv(output_filepath, index=False)
     print(f"✅ 已经生成最终处理后的 CSV 文件: {output_filepath}")
@@ -189,7 +198,7 @@ def preprocess_text_features(input_filepath: str, output_filepath: str):
 
 
 if __name__ == "__main__":
-    
+#    from ..config import validDatasetCSV,processedValidDatasetCSV;
     # 预处理训练集
     """ preprocess_text_features(
         input_filepath=config.trainDatasetCSV,
