@@ -1,0 +1,134 @@
+import pandas as pd
+import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.metrics import classification_report, confusion_matrix, accuracy_score
+import joblib
+import os
+
+
+def preprocess_data(input_filepath: str):
+    """
+    加载并预处理数据。
+    返回处理后的特征DataFrame和真实标签Series。
+    """
+    if not os.path.exists(input_filepath):
+        print(f"错误: 文件 '{input_filepath}' 未找到。")
+        return None, None
+
+    df = pd.read_csv(input_filepath)
+
+    required_cols = ['eventId', 'argsNum', 'processId', 'parentProcessId', 'userId', 'mountNamespace', 'returnValue',
+                     'target']
+    if not all(col in df.columns for col in required_cols):
+        print(f"错误: 文件缺少必要的列。需要: {required_cols}")
+        return None, None
+
+    y_true = df['target']
+    features_df = df.drop('target', axis=1)
+
+    processed_df = pd.DataFrame()
+
+    processed_df['eventId'] = features_df['eventId']
+    processed_df['argsNum'] = features_df['argsNum']
+    processed_df['processId_is_os'] = features_df['processId'].isin([0, 1, 2]).astype(int)
+    processed_df['parentProcessId_is_os'] = features_df['parentProcessId'].isin([0, 1, 2]).astype(int)
+    processed_df['userId_is_os'] = (features_df['userId'] < 1000).astype(int)
+    processed_df['mountNamespace_is_default'] = (features_df['mountNamespace'] == 4026531840).astype(int)
+    processed_df['returnValue_mapped'] = features_df['returnValue'].apply(
+        lambda x: -1 if x < 0 else (0 if x == 0 else 1))
+
+    return processed_df, y_true
+
+
+def train_kmeans_and_get_threshold(train_data_path: str, n_clusters: int = 8, quantile: float = 0.99):
+    """
+    使用K-Means进行训练，并确定异常检测的距离阈值。
+    """
+    print("--- 步骤 1: K-Means 模型训练 ---")
+    X_train, _ = preprocess_data(train_data_path)
+    if X_train is None:
+        return None, None
+
+    print(f"使用 k={n_clusters} 个簇进行K-Means训练...")
+    # n_init='auto' 会自动选择最佳的随机初始化次数
+    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init='auto')
+    kmeans.fit(X_train)
+    print("模型训练完成。")
+
+    # 计算每个训练点到其最近簇中心的距离
+    distances = np.min(kmeans.transform(X_train), axis=1)
+
+    # 根据分位数设置阈值
+    threshold = np.quantile(distances, quantile)
+    print(f"异常检测阈值已设定为: {threshold:.4f} (基于训练数据 {quantile * 100}th 百分位数距离)")
+
+    # 保存模型和阈值
+    model_info = {'model': kmeans, 'threshold': threshold}
+    model_filename = 'kmeans_model.joblib'
+    joblib.dump(model_info, model_filename)
+    print(f"K-Means模型和阈值已保存到: '{model_filename}'")
+
+    return model_filename
+
+
+def validate_kmeans_model(model_filename: str, valid_data_path: str):
+    """
+    加载K-Means模型和阈值，并在验证集上进行评估。
+    """
+    print("\n--- 步骤 2: K-Means 模型验证 ---")
+    if not os.path.exists(model_filename):
+        print(f"错误: 模型文件 '{model_filename}' 未找到。")
+        return
+
+    # 加载模型和阈值
+    model_info = joblib.load(model_filename)
+    kmeans_model = model_info['model']
+    threshold = model_info['threshold']
+    print(f"成功加载模型和阈值 ({threshold:.4f})。")
+
+    # 预处理验证数据
+    X_valid, y_valid = preprocess_data(valid_data_path)
+    if X_valid is None:
+        return
+
+    # 计算验证集中每个点到最近簇中心的距离
+    distances = np.min(kmeans_model.transform(X_valid), axis=1)
+
+    # 如果距离大于阈值，则为异常(1)，否则为正常(0)
+    y_pred = np.where(distances > threshold, 1, 0)
+
+    # 评估性能
+    print("\n" + "=" * 40)
+    print("       模型在验证集上的性能评估")
+    print("=" * 40)
+
+    accuracy = accuracy_score(y_valid, y_pred)
+    print(f"整体准确率 (Accuracy): {accuracy:.4f}")
+
+    print("\nClassification Report:")
+    print(classification_report(y_valid, y_pred, target_names=['class 0', 'class 1']))
+
+    print("Confusion Matrix:")
+    cm = confusion_matrix(y_valid, y_pred)
+    print(cm)
+    print("\n混淆矩阵解读:")
+    print(f"[[ True Negatives (TN), False Positives (FP) ]]")
+    print(f" [ False Negatives (FN),  True Positives (TP) ]]")
+    print(f"正确预测为正常的数量 (TN): {cm[0][0]}")
+    print(f"错误预测为异常的数量 (FP): {cm[0][1]}  (误报)")
+    print(f"错误预测为正常的数量 (FN): {cm[1][0]}  (漏报)")
+    print(f"正确预测为异常的数量 (TP): {cm[1][1]}")
+
+
+# --- 主程序入口 ---
+if __name__ == '__main__':
+    # --- 请在这里配置您的文件名 ---
+    TRAIN_CSV = './data/processes_train.csv'
+    VALIDATION_CSV = './data/processes_valid.csv'  # <--- 确保您的验证文件名是这个
+
+    # 步骤 1: 训练模型并获取模型文件名
+    saved_model_file = train_kmeans_and_get_threshold(TRAIN_CSV)
+
+    # 步骤 2: 如果模型成功训练，则进行验证
+    if saved_model_file:
+        validate_kmeans_model(saved_model_file, VALIDATION_CSV)
