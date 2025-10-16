@@ -126,7 +126,8 @@ if 1 in y_train.value_counts(normalize=True):
 
 iso_forest_model = IsolationForest(
     n_estimators=100,
-    contamination=contamination_rate,
+    # contamination=contamination_rate,
+    contamination=0.04,
     random_state=42,
     n_jobs=-1 # 使用所有可用的CPU核心
 )
