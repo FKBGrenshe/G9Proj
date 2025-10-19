@@ -198,12 +198,16 @@ def preprocess_text_features(input_filepath: str, output_filepath: str):
 
 
 if __name__ == "__main__":
-#    from ..config import validDatasetCSV,processedValidDatasetCSV;
+    # from config import trainDatasetCSV, validDatasetCSV, processedTrainDatasetCSV, processedValidDatasetCSV;
+    trainDatasetCSV = r"D:\Project\NusSemester1BigDataProjectBETH\G9Proj\data\sample_processes_train.csv"
+    validDatasetCSV = r"D:\Project\NusSemester1BigDataProjectBETH\G9Proj\data\sample_processes_valid.csv"
+    processedTrainDatasetCSV = r"D:\Project\NusSemester1BigDataProjectBETH\G9Proj\data\processed_sample_processes_train.csv"
+    processedValidDatasetCSV = r"D:\Project\NusSemester1BigDataProjectBETH\G9Proj\data\processed_sample_processes_valid.csv"
     # 预处理训练集
-    """ preprocess_text_features(
-        input_filepath=config.trainDatasetCSV,
-        output_filepath=config.processedTrainDatasetCSV
-    ) """
+    preprocess_text_features(
+        input_filepath=trainDatasetCSV,
+        output_filepath=processedTrainDatasetCSV
+    )
     # 预处理验证集
     preprocess_text_features(
         input_filepath=validDatasetCSV,
