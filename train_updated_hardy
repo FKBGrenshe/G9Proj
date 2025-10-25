@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+BETH 基线：训练 + 验证（仅保留 iForest 原生 & 全局阈值F1）
+依赖: pandas, numpy, scikit-learn, joblib, matplotlib (仅用于ROC图)
+"""
+
+import json
+from pathlib import Path
+from typing import Dict, List, Any, Tuple, Optional
+
+import numpy as np
+import pandas as pd
+from joblib import dump
+from sklearn.ensemble import IsolationForest
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    roc_curve,
+    precision_recall_fscore_support,
+)
+import matplotlib.pyplot as plt
+
+# ===================== 参数区（改这里） =====================
+TRAIN_CSV = Path("./data/processes_train.csv")
+VALID_CSV = Path("./data/processes_valid.csv")
+
+OUTPUT_DIR = Path("./output/beth")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+MODEL_PATH = OUTPUT_DIR / "iforest_beth_model.joblib"
+TRAIN_SUMMARY_PATH = OUTPUT_DIR / "train_summary.json"
+VALID_PRED_CSV = OUTPUT_DIR / "valid_predictions.csv"
+VALID_SUMMARY_PATH = OUTPUT_DIR / "valid_summary.json"
+ROC_PNG = OUTPUT_DIR / "valid_roc_curve.png"
+
+# iForest 超参
+N_ESTIMATORS = 400
+CONTAMINATION = 0.05          # 若仅用原生预测，这个值会决定 predict 的阈值
+RANDOM_STATE = 42
+
+# ---------- 列别名解析 ----------
+ALIAS_GROUPS: Dict[str, List[str]] = {
+    "timestamp": ["timestamp", "time", "ts", "@timestamp"],
+    "eventId": ["eventId", "event_id", "evt", "event", "syscall_id"],
+    "processId": ["processId", "pid", "proc_id"],
+    "parentProcessId": ["parentProcessId", "ppid", "parent_pid"],
+    "userId": ["userId", "uid", "user_id"],
+    "hostName": ["hostName", "host", "hostname"],
+    "mountNamespace": ["mountNamespace", "mntns", "mnt_ns", "mount_ns"],
+    "argsNum": ["argsNum", "argc", "args_count", "argsnum"],
+    "returnValue": ["returnValue", "ret", "retval", "return_value"],
+    "sus": ["sus", "suspicious", "is_sus"],
+    "evil": ["evil", "is_evil", "malicious", "label_evil"],
+    "target": ["target", "label", "y"],
+}
+REQUIRED_STD = [
+    "eventId", "processId", "parentProcessId",
+    "userId", "mountNamespace", "argsNum", "returnValue"
+]
+
+
+def resolve_columns(df: pd.DataFrame, alias_groups: Dict[str, List[str]]) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for std, cands in alias_groups.items():
+        for c in cands:
+            if c in df.columns:
+                mapping[std] = c
+                break
+    return mapping
+
+
+# ---------- 特征工程（训练） ----------
+def build_features_train(df_raw: pd.DataFrame, colmap: Dict[str, str]) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    pid = pd.to_numeric(df_raw[colmap["processId"]], errors="coerce").astype("Int64")
+    ppid = pd.to_numeric(df_raw[colmap["parentProcessId"]], errors="coerce").astype("Int64")
+    uid = pd.to_numeric(df_raw[colmap["userId"]], errors="coerce").astype("Int64")
+    mntns = pd.to_numeric(df_raw[colmap["mountNamespace"]], errors="coerce").astype("Int64")
+    argc = pd.to_numeric(df_raw[colmap["argsNum"]], errors="coerce").fillna(0).astype(int)
+    retval = pd.to_numeric(df_raw[colmap["returnValue"]], errors="coerce").fillna(0).astype(int)
+
+    eventId_series = df_raw[colmap["eventId"]]
+    if not np.issubdtype(eventId_series.dtype, np.number):
+        eid_values = pd.Series(eventId_series).astype(str)
+        eventId_map = {k: i for i, k in enumerate(eid_values.unique())}
+        eventId = eid_values.map(eventId_map).astype(int)
+    else:
+        eventId_map = "identity"
+        eventId = pd.to_numeric(eventId_series, errors="coerce").fillna(0).astype(int)
+
+    is_system_pid = pid.isin([0, 1, 2]).astype(int)
+    parent_is_system_pid = ppid.isin([0, 1, 2]).astype(int)
+    user_is_system = (uid < 1000).astype(int)
+    is_default_mount = (mntns == 4026531840).astype(int)
+    retval_sign = retval.apply(lambda x: -1 if x < 0 else (1 if x > 0 else 0)).astype(int)
+
+    features_df = pd.DataFrame({
+        "eventId": eventId.values,
+        "is_system_pid": is_system_pid.values,
+        "parent_is_system_pid": parent_is_system_pid.values,
+        "user_is_system": user_is_system.values,
+        "is_default_mount": is_default_mount.values,
+        "argsNum": argc.values,
+        "retval_sign": retval_sign.values,
+    }).dropna().reset_index(drop=True)
+
+    preprocess_meta: Dict[str, Any] = {
+        "alias_map": colmap,
+        "eventId_mapping": eventId_map,
+        "rules": {
+            "is_system_pid": "pid in {0,1,2}",
+            "parent_is_system_pid": "ppid in {0,1,2}",
+            "user_is_system": "uid < 1000",
+            "is_default_mount": "mntns == 4026531840 (0xF0000000)",
+            "argsNum": "as-is (int)",
+            "retval_sign": "sign(returnValue): -1 if <0, 0 if ==0, 1 if >0",
+            "eventId": "kept; if non-numeric, mapped using training map",
+        }
+    }
+    return features_df, preprocess_meta
+
+
+# ---------- 特征工程（验证） ----------
+def build_features_valid(df_raw: pd.DataFrame, preprocess_meta: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    colmap = preprocess_meta["alias_map"]
+
+    pid = pd.to_numeric(df_raw[colmap["processId"]], errors="coerce").astype("Int64")
+    ppid = pd.to_numeric(df_raw[colmap["parentProcessId"]], errors="coerce").astype("Int64")
+    uid = pd.to_numeric(df_raw[colmap["userId"]], errors="coerce").astype("Int64")
+    mntns = pd.to_numeric(df_raw[colmap["mountNamespace"]], errors="coerce").astype("Int64")
+    argc = pd.to_numeric(df_raw[colmap["argsNum"]], errors="coerce").fillna(0).astype(int)
+    retval = pd.to_numeric(df_raw[colmap["returnValue"]], errors="coerce").fillna(0).astype(int)
+
+    eventId_series = df_raw[colmap["eventId"]]
+    eventId_map = preprocess_meta["eventId_mapping"]
+    if eventId_map == "identity":
+        eventId = pd.to_numeric(eventId_series, errors="coerce").fillna(0).astype(int)
+    else:
+        eid_values = pd.Series(eventId_series).astype(str)
+        eventId = eid_values.map(lambda v: eventId_map.get(v, -1)).astype(int)
+
+    is_system_pid = pid.isin([0, 1, 2]).astype(int)
+    parent_is_system_pid = ppid.isin([0, 1, 2]).astype(int)
+    user_is_system = (uid < 1000).astype(int)
+    is_default_mount = (mntns == 4026531840).astype(int)
+    retval_sign = retval.apply(lambda x: -1 if x < 0 else (1 if x > 0 else 0)).astype(int)
+
+    features_df = pd.DataFrame({
+        "eventId": eventId.values,
+        "is_system_pid": is_system_pid.values,
+        "parent_is_system_pid": parent_is_system_pid.values,
+        "user_is_system": user_is_system.values,
+        "is_default_mount": is_default_mount.values,
+        "argsNum": argc.values,
+        "retval_sign": retval_sign.values,
+    }).dropna().reset_index(drop=True)
+
+    return features_df, colmap
+
+
+# ---------- 训练 ----------
+def train_iforest(X: pd.DataFrame) -> IsolationForest:
+    clf = IsolationForest(
+        n_estimators=N_ESTIMATORS,
+        max_samples="auto",
+        contamination=CONTAMINATION,
+        max_features=1.0,
+        bootstrap=False,
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
+        verbose=0
+    )
+    clf.fit(X.values)
+    return clf
+
+
+# ---------- 全局阈值（F1自动调优） ----------
+def tune_global_threshold_for_f1(scores_valid: np.ndarray,
+                                 y_true_bin: np.ndarray,
+                                 percentiles: Optional[List[float]] = None) -> Tuple[float, Dict[str, float]]:
+    """
+    scores_valid: iForest decision_function 分数（越大越正常）
+    返回：最佳阈值 thr，使得 (scores<=thr)->异常 的 F1 最优
+    """
+    if percentiles is None:
+        percentiles = list(np.linspace(0.1, 20, 200))  # 0.1% ~ 20%
+
+    cand = np.percentile(scores_valid, percentiles)
+    best = {"f1": -1.0, "prec": 0.0, "rec": 0.0, "thr": None}
+    for t in cand:
+        y_pred = (scores_valid <= t).astype(int)
+        prec, rec, f1, _ = precision_recall_fscore_support(y_true_bin, y_pred, average="binary", zero_division=0)
+        if f1 > best["f1"]:
+            best = {"f1": float(f1), "prec": float(prec), "rec": float(rec), "thr": float(t)}
+    return best["thr"], best
+
+
+# ---------- 评估 ----------
+def evaluate_binary(y_true_bin: np.ndarray, y_pred_bin: np.ndarray, scores_for_auc: np.ndarray) -> Dict[str, Any]:
+    prec, rec, f1, _ = precision_recall_fscore_support(y_true_bin, y_pred_bin, average="binary", zero_division=0)
+    try:
+        auc = roc_auc_score(y_true_bin, -scores_for_auc)  # -scores 越大越异常
+    except Exception:
+        auc = None
+    cm = confusion_matrix(y_true_bin, y_pred_bin).tolist()
+    cr = classification_report(y_true_bin, y_pred_bin, digits=4, zero_division=0)
+    return {
+        "precision": float(prec),
+        "recall": float(rec),
+        "f1": float(f1),
+        "roc_auc": None if auc is None else float(auc),
+        "confusion_matrix_[y_true0/1]_x_[pred0/1]": cm,
+        "classification_report": cr
+    }
+
+
+def save_roc_plot(y_true_bin: np.ndarray, scores: np.ndarray, out_png: Path) -> Optional[str]:
+    try:
+        fpr, tpr, _ = roc_curve(y_true_bin, -scores)
+        plt.figure()
+        plt.plot(fpr, tpr, linewidth=2)
+        plt.xlabel("False Positive Rate")
+        plt.ylabel("True Positive Rate")
+        plt.title("ROC (Validation)")
+        plt.grid(True, linestyle="--", alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(out_png, dpi=150)
+        plt.close()
+        return str(out_png)
+    except Exception:
+        return None
+
+
+def main():
+    # ---------------- 训练 ----------------
+    assert TRAIN_CSV.exists(), f"找不到训练集：{TRAIN_CSV}"
+    df_tr = pd.read_csv(TRAIN_CSV)
+    print(f"[Train] 读取训练集：{df_tr.shape}")
+
+    colmap_tr = resolve_columns(df_tr, ALIAS_GROUPS)
+    missing = [c for c in REQUIRED_STD if c not in colmap_tr]
+    if missing:
+        raise ValueError("训练集缺少必须字段（别名未匹配到）：" + ", ".join(missing))
+
+    X_tr, preprocess_meta = build_features_train(df_tr, colmap_tr)
+    print(f"[Train] 特征表：{X_tr.shape} 列={list(X_tr.columns)}")
+
+    clf = train_iforest(X_tr)
+    print("[Train] Isolation Forest 训练完成。")
+
+    # 保存模型 + 预处理元信息
+    artifact = {
+        "model": clf,
+        "features": list(X_tr.columns),
+        "preprocess": preprocess_meta,
+    }
+    dump(artifact, MODEL_PATH)
+    print(f"[Train] 模型已保存：{MODEL_PATH}")
+
+    # 训练摘要
+    train_summary = {
+        "train_csv": str(TRAIN_CSV),
+        "n_rows_raw": int(df_tr.shape[0]),
+        "n_rows_used": int(X_tr.shape[0]),
+        "n_features": int(X_tr.shape[1]),
+        "features": list(X_tr.columns),
+        "alias_map": colmap_tr,
+        "model_params": clf.get_params(),
+        "output_model_path": str(MODEL_PATH),
+    }
+    with open(TRAIN_SUMMARY_PATH, "w", encoding="utf-8") as fh:
+        json.dump(train_summary, fh, indent=2, ensure_ascii=False)
+    print(f"[Train] 训练摘要已保存：{TRAIN_SUMMARY_PATH}")
+
+    # ---------------- 验证 ----------------
+    assert VALID_CSV.exists(), f"找不到验证集：{VALID_CSV}"
+    df_va = pd.read_csv(VALID_CSV)
+    print(f"[Valid] 读取验证集：{df_va.shape}")
+
+    X_va, colmap_va = build_features_valid(df_va, preprocess_meta)
+    print(f"[Valid] 特征表：{X_va.shape}")
+
+    # 打分与原生预测
+    s_va = clf.decision_function(X_va.values)         # 越大越正常
+    ypred_iforest = (clf.predict(X_va.values) == -1).astype(int)  # 原生：-1为异常
+
+    # 标签（若存在则启用评估与阈值调优）
+    label_col = None
+    for std in ["evil", "target"]:
+        if std in colmap_va:
+            label_col = colmap_va[std]
+            break
+
+    eval_dict = {"has_label": False}
+    best_global = None
+    final_pred = ypred_iforest  # 默认用原生
+
+    if label_col and label_col in df_va.columns:
+        y_true = pd.to_numeric(df_va[label_col], errors="coerce").fillna(0).astype(int)
+        y_true_bin = np.where(y_true > 0, 1, 0)
+
+        # 全局阈值（F1自动调优）
+        thr_glob, best_stats = tune_global_threshold_for_f1(s_va, y_true_bin)
+        ypred_global_f1 = (s_va <= thr_glob).astype(int)
+
+        # 评估
+        eval_iforest = evaluate_binary(y_true_bin, ypred_iforest, s_va)
+        eval_global_f1 = evaluate_binary(y_true_bin, ypred_global_f1, s_va)
+        roc_path = save_roc_plot(y_true_bin, s_va, ROC_PNG)
+
+        # 在两者中选 F1 更高者为最终策略
+        candidates = {
+            "iforest_native": (eval_iforest["f1"], ypred_iforest, eval_iforest),
+            "global_threshold_f1": (eval_global_f1["f1"], ypred_global_f1, eval_global_f1),
+        }
+        best_name, (best_f1, best_pred, best_eval) = max(candidates.items(), key=lambda kv: kv[1][0])
+        final_pred = best_pred
+
+        eval_dict = {
+            "has_label": True,
+            "label_used": label_col,
+            "iforest_native": eval_iforest,
+            "global_threshold_f1": {**eval_global_f1, "threshold": thr_glob, "search_note": "scores<=thr -> anomaly"},
+            "roc_curve_png": roc_path,
+            "best_strategy": {"name": best_name, "f1": best_f1}
+        }
+
+    # 导出验证集预测结果
+    out_df = pd.DataFrame({
+        "score_normality": s_va,
+        "pred_iforest": ypred_iforest,
+        "pred_global_f1": (s_va <= best_global).astype(int) if best_global is not None else np.nan,
+        "pred_final": final_pred,
+    })
+
+    # 常用主键字段（若存在）
+    if "timestamp" in colmap_va:
+        out_df["timestamp"] = df_va[colmap_va["timestamp"]]
+    if "hostName" in colmap_va:
+        out_df["hostName"] = df_va[colmap_va["hostName"]]
+    if "userId" in colmap_va:
+        out_df["userId"] = df_va[colmap_va["userId"]]
+    if "eventId" in colmap_va:
+        out_df["eventId_raw"] = df_va[colmap_va["eventId"]]
+
+    out_df.to_csv(VALID_PRED_CSV, index=False)
+    print(f"[Valid] 预测结果已导出：{VALID_PRED_CSV}")
+
+    # 汇总验证摘要
+    valid_summary = {
+        "valid_csv": str(VALID_CSV),
+        "n_rows_valid_raw": int(df_va.shape[0]),
+        "n_rows_valid_used": int(X_va.shape[0]),
+        "features_used": list(X_va.columns),
+        "eval": eval_dict
+    }
+    with open(VALID_SUMMARY_PATH, "w", encoding="utf-8") as fh:
+        json.dump(valid_summary, fh, indent=2, ensure_ascii=False)
+    print(f"[Valid] 验证摘要已保存：{VALID_SUMMARY_PATH}")
+
+    print("[Done] 全流程结束。输出目录：", OUTPUT_DIR)
+
+
+if __name__ == "__main__":
+    main()
